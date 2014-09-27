@@ -1,0 +1,23 @@
+{
+  "name": "fuse-box",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TheMsomTubaSection/fuse-box.git"
+  },
+  "author": "",
+  "license": "BSD",
+  "bugs": {
+    "url": "https://github.com/TheMsomTubaSection/fuse-box/issues"
+  },
+  "dependencies": {
+    "fuse4js": "~0.1.9",
+    "box-sdk": "0.0.5",
+    "tmp": "0.0.24"
+  }
+}
