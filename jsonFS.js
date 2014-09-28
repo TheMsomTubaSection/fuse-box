@@ -1,12 +1,13 @@
 /*
- * 
  * boxFS.js
- * 
- * 
  */
 var f4js = require('fuse4js');
 var fs = require('fs');
+var path = require('path');
+var open = require('open');
 var tmp = require('tmp');
+var Future = require('fibers/future'), wait = Future.wait;
+var Fiber = require('fibers');
 var box_sdk = require('box-sdk');
 var options = {};  // See parseArgs()
 var connection = null;
@@ -18,26 +19,56 @@ var connection = null;
  * Given the name space represented by the object 'root', locate
  * the sub-object corresponding to the specified path
  */
-function lookup(root, path) {
-	var cur = null, previous = null, name = '';
+function lookup(connection, path) {
+	console.log(path);
 	if (path === '/') {
-		return { node:root, parent:null, name:'' };
+		return { "type":"directory", "id":0, "name":'/' };
 	}
 	comps = path.split('/');
-	for (i = 0; i < comps.length; ++i) {
-		previous = cur;
-		if (i == 0) {
-			cur = root;
-		} else if (cur !== undefined ){
-			name = comps[i];
-			cur = cur[name];
-			if (cur === undefined) {
-				break;
-			}
+	var current = {};
+	_backRecursePath(connection, path, current);
+	return {'id':current.id, 'type':current.type, 'name':current.name};
+}
+
+function getEntry(id, item_collection) {
+	for (x in item_collection) {
+		if (id === x.id) {
+			return x;
 		}
 	}
-	return {node:cur, parent:previous, name:name};
+	return null;
 }
+
+function _backRecursePath(connection, currentPath, current) {
+	var fiber = Fiber(function () {
+		var future = new Future();
+		if (currentPath === '/') {
+			connection.getFolderInfo(0, function (error, body) {
+				var json = eval(body);
+				current = getEntry(json.item_collection.entries);
+				future.return();
+			});
+		} else if (current !== null) {
+			_backRecursePath(connection, path.resolve(path.join(currentPath, "..")), current);
+			if (current.type === "folder") {
+			connection.getFolderInfo(current.id, function (error, body) {
+				var json = eval(body);
+				current = getEntry(json.item_collection.entries);
+				future.return();
+			});
+			} else {
+			connection.getFileInfo(current.id, function (error, body) {
+				var json = eval(body);
+				current = getEntry(json.item_collection.entries);
+				future.return();
+			});
+			}
+				
+		}
+		future.wait();
+	});
+	fiber.run();
+};
 
 //---------------------------------------------------------------------------
 
@@ -51,15 +82,20 @@ function getattr(path, cb) {
 	var stat = {};
 	var err = 0; // assume success
 	var pathId = lookup(connection, path); // TODO lookup(connection, path) returns pathId = {id: file/folderId, type: "file/folder"}
-	connection.getFileInfo(pathId.id, func(error, body) { // XYZZY FileInfo seems to be the same as FolderInfo? I dunooooooooooo
-		if (error) cb( error, null );
-		var info = JSON.parse(body);
+connection.getFolderInfo(pathId.id, function (error, body) { // XYZZY FileInfo seems to be the same as FolderInfo? I dunooooooooooo
+		if (error) return cb( error, null );
+		var info = eval(body);
 		stat.size = info.size;
 		stat.mode = info.item_collection.total_count>1?"040":"010";
-		stat.mode += (info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)+((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10)+0((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10); // NOTE the execute bit is always set to false
+		if (info.shared_link != undefined) {
+			stat.mode += (info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)+((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10)+0((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10); // NOTE the execute bit is always set to false
+		} else {
+			stat.mode += "777";
+		}
 		stat.mode = parseInt(stat.mode);
-		cb( err, stats);
-	});
+		stat.mode = 040777;
+		cb( err, stat);
+		});
 };
 
 //---------------------------------------------------------------------------
@@ -71,23 +107,24 @@ function getattr(path, cb) {
  *     and names is the result in the form of an array of file names (when err === 0).
  */
 function readdir(path, cb) {
-	var names = [];
+	var names = [];//'Swift'];
 	var err = 0; // assume success
 	var pathId = lookup(connection, path); // TODO lookup(connection, path) returns pathId = {id: file/folderId, type: "file/folder"}
 
-	if (pathId.type === "file") {
-		err = -2;
-		cb( err, names );
-	} else {
-		connection.getFolderInfo(pathId.id, func(error, body) {
-			if (error) cb( error, null );
-			var info = JSON.parse(body);
-			for (key in info.item_collection.entries)
-				if (info.item_colleection.entries.hasOwnKey(key)) names.push(key.name);
-			cb(err, names);
-		});
-	}
+if (pathId.type === "file") {
+	err = -2;
 	cb( err, names );
+} else {
+	connection.getFolderInfo(pathId.id, function (error, body) {
+			if (error) cb( error, null );
+			var info = eval(body);
+			console.log(JSON.stringify(body.item_collection.entries));
+			for (i=0;i<body.item_collection.entries.length;i++) {
+				names.push(body.item_collection.entries[i]);
+				}
+			cb(err, names);
+			});
+}
 }
 
 //---------------------------------------------------------------------------
@@ -140,12 +177,12 @@ function read(path, offset, len, buf, fh, cb) {
 
 		case 'file': // a string treated as ASCII characters
 			tmp.tmpName(function _tempNameGenerated(err, path) {
-				    if (err) cb(err);
-				    connection.getFile(file.id, null, path, func(error) {
-					    if (error) cb(error);
-					    fs.read(path, buf, 0, len, offset, cb);
-					    });
-			});
+					if (err) cb(err);
+					connection.getFile(file.id, null, path, function (error) {
+							if (error) cb(error);
+							fs.read(path, buf, 0, len, offset, cb);
+							});
+					});
 			return;
 
 		default:
@@ -168,37 +205,30 @@ function read(path, offset, len, buf, fh, cb) {
  */
 function write(path, offset, len, buf, fh, cb) {
 	var err = 0; // assume success
-	var info = lookup(connection, path);
-	var file = info.node;
-	var name = info.name;
+	var file = lookup(connection, path);
 	var parent = info.parent;
 	var beginning, blank = '', data, ending='', numBlankChars;
 
-	switch (typeof file) {
+	switch (file.type) {
 		case 'undefined':
 			err = -2; // -ENOENT
 			break;
 
-		case 'object': // directory
+		case 'directory': // directory
 			err = -1; // -EPERM
 			break;
 
-		case 'string': // a string treated as ASCII characters
-			data = buf.toString('ascii'); // read the new data
-			if (offset < file.length) {
-				beginning = file.substring(0, offset);
-				if (offset + data.length < file.length) {
-					ending = file.substring(offset + data.length, file.length)
-				}
-			} else {
-				beginning = file;
-				numBlankChars = offset - file.length;
-				while (numBlankChars--) blank += ' ';
-			}
-			delete parent[name];
-			parent[name] = beginning + blank + data + ending;
-			err = data.length;
-			break;
+		case 'file': // a string treated as ASCII characters
+			tmp.tmpName(function _tempNameGenerated(err, path) {
+					if (err) cb(err);
+					connection.getFile(file.id, null, path, function (error) {
+							if (error) cb(error);
+							fs.write(path, buf, 0, len, offset, function (error) {
+									connection.uploadFileNewVersion(path, file.id, null, cb);
+									});
+							});
+					});
+			return;
 
 		default:
 			break;
@@ -232,13 +262,12 @@ function create (path, mode, cb) {
 	var err = 0; // assume success
 	var info = lookup(connection, path);
 
-	switch (typeof info.node) {
+	switch (info.type) {
 		case 'undefined':
-			if (info.parent !== null) {
-				info.parent[info.name] = '';
-			} else {
-				err = -2; // -ENOENT      
-			}
+			tmp.tmpName(function _tempNameGenerated(err, path) {
+					if (err) cb(err);
+					connection.uploadFile(info.name, info.parent, cb);
+					});
 			break;
 
 		case 'string': // existing file
@@ -263,18 +292,18 @@ function unlink(path, cb) {
 	var err = 0; // assume success
 	var info = lookup(connection, path);
 
-	switch (typeof info.node) {
+	switch (info.type) {
 		case 'undefined':
 			err = -2; // -ENOENT      
 			break;
 
-		case 'object': // existing directory
+		case 'directory': // existing directory
 			err = -1; // -EPERM
 			break;
 
-		case 'string': // existing file
-			delete info.parent[info.name];
-			break;
+		case 'file': // existing file
+			connection.deleteFileNewVersion(file.id, cb);
+			return;
 
 		default:
 			break;
@@ -292,13 +321,22 @@ function unlink(path, cb) {
  */
 function rename(src, dst, cb) {
 	var err = -2; // -ENOENT assume failure
-	var source = lookup(connection, src), dest;
+	var source = lookup(connection, src);
 
-	if (typeof source.node !== 'undefined') { // existing file or directory
-		dest = lookup(connection, dst);
-		if (typeof dest.node === 'undefined' && dest.parent !== null) {
-			dest.parent[dest.name] = source.node;
-			delete source.parent[source.name];
+	if (source.type === 'file') { // existing file
+		var dest = lookup(connection, dst);
+		if (dest.type === 'undefined') {
+			dest.parent = lookup(connection, path.resolve(dst+"/.."));
+			connection.updateFile(source.id, {"name": dst, "id": dest.parent.id}, cb);
+			err = 0;
+		} else {
+			err = -17; // -EEXIST
+		}
+	} else if (source.type === 'directory') { // existing file
+		var dest = lookup(connection, dst);
+		if (dest.type === 'undefined') {
+			dest.parent = lookup(connection, path.resolve(dst+"/.."));
+			connection.updateFolder(source.id, {"name": dst, "id": dest.parent.id}, cb);
 			err = 0;
 		} else {
 			err = -17; // -EEXIST
@@ -317,7 +355,7 @@ function rename(src, dst, cb) {
  */
 function mkdir(path, mode, cb) {
 	var err = -2; // -ENOENT assume failure
-	var dst = lookup(connection, path), dest;
+	var dst = lookup(connection, path);
 	if (typeof dst.node === 'undefined' && dst.parent != null) {
 		dst.parent[dst.name] = {};
 		err = 0;
@@ -457,34 +495,34 @@ function parseArgs() {
 	if (args.length < 3) {
 		return false;
 	}
-	options.mountPoint = args[1];
-	options.email = args[2];
+	options.mountPoint = args[2];
+	options.email = args[3];
 	return true;
 }
 
 //---------------------------------------------------------------------------
 
 (function main() {
-if (parseArgs()) {
-	console.log("Mount point: " + options.mountPoint);
-	var box = box_sdk.Box({
-		client_id: 'ja3zdy0zyo49t60iuko1ix7h2w7ikl73',
-		client_secret: 'oqBXCS7lQgSDRBNySVymWHjAyO4BkEiU',
-		port: 443,
-		host: 'https://api.box.com/' //default localhost
-	}, logLevel);
-	connection = box.getConnection(option.email);
+ if (parseArgs()) {
+ console.log("Mount point: " + options.mountPoint);
+ var box = box_sdk.Box({
+client_id: 'ja3zdy0zyo49t60iuko1ix7h2w7ikl73',
+client_secret: 'oqBXCS7lQgSDRBNySVymWHjAyO4BkEiU',
+port: 5000,
+host: 'localhost' //default localhost
+}, 1);
+ connection = box.getConnection(options.email);
 
-	 //Navigate user to the auth URL
-	 console.log(connection.getAuthURL());
+ //Navigate user to the auth URL
+open(connection.getAuthURL());
 
-	 connection.ready(function () {
-try {
-	f4js.start(options.mountPoint, handlers, options.debugFuse, opts);
-} catch (e) {
-	console.log("Exception when starting file system: " + e);
-}
-} else {
-	usage();
-}
+ connection.ready(function () {
+	 try {
+	 f4js.start(options.mountPoint, handlers, options.debugFuse, []);
+	 } catch (e) {
+	 console.log("Exception when starting file system: " + e);
+	 }});
+ } else {
+	 usage();
+ }
 })();
