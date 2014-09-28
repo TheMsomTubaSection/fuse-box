@@ -6,28 +6,13 @@ var fs = require('fs');
 var paths = require('path');
 var open = require('open');
 var tmp = require('tmp');
+var util = require('util');
 var box_sdk = require('box-sdk');
 var options = {};  // See parseArgs()
 var connection = null;
 var fileTree = {};
 
 
-//---------------------------------------------------------------------------
-
-/*
- * Given the name space represented by the object 'root', locate
- * the sub-object corresponding to the specified path
- */
-function lookup(connection, path, callback) {
-	path = paths.resolve(path);
-	console.log(path);
-	var comps = paths.resolve(path).split('/');
-	while (comps[0] === '') comps.shift();
-	if (comps.length === 0) {
-		return callback({ "type":"folder", "id":0, "name":'/' });
-	}
-	gfi({'id':0,'type':'folder'}, comps, callback);
-}
 
 function gfi(id, comps, callback) {
 	console.log('I: '+JSON.stringify(id));
@@ -68,47 +53,73 @@ function getEntry(id, item_collection) {
 //---------------------------------------------------------------------------
 
 /*
+ * Given the name space represented by the object 'root', locate
+ * the sub-object corresponding to the specified path
+ */
+function lookup(connection, path, callback) {
+	path = paths.resolve(path);
+	var comps = paths.resolve(path).split('/');
+	while (comps[0] === '') comps.shift();
+	var currentNode = fileTree["/"];
+	while (currentName = comps.shift()) {
+		currentNode = currentNode.children[currentName];
+	}
+	console.log(currentNode);
+	return callback(currentNode);
+	if (comps.length === 0) {
+		return callback({ "type":"folder", "id":0, "name":'/' });
+	}
+	gfi({'id':0,'type':'folder'}, comps, callback);
+}
+//---------------------------------------------------------------------------
+
+/*
  * Handler for the getattr() system call.
  * path: the path to the file
  * cb: a callback of the form cb(err, stat), where err is the Posix return code
  *     and stat is the result in the form of a stat structure (when err === 0)
  */
-function getattr(path, cb) {	
+function getattr(path, cb) {
+	console.log("getattr(path, cb)");
 	var stat = {};
 	var err = 0; // assume success
 	lookup(connection, path, function(pathId) {
-			if (pathId !== undefined) return cb(-2, null); // -ENOENT
+			console.log(path);
+			console.log(pathId);
+			if (pathId === undefined) return cb(-2, null); // -ENOENT
 			if (pathId.type === 'folder') {
+			return cb(err, pathId.permissions);
 			connection.getFolderInfo(pathId.id, function (error, info) {
 					console.log('DE:'+error);
 					if (error) return cb( error, null );
-					stat.size = info.size;
+					stat.size = 4096;
 					stat.nlink = 1;
-					stat.mode = info.item_collection.total_count>1?"040":"010";
-					if (info.shared_link != undefined) {
-					stat.mode += (info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)+((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10)+0((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10); // NOTE the execute bit is always set to false
-					} else {
-					stat.mode += "777";
-					}
-					console.log("SM:"+stat.mode);
-					stat.mode = parseInt(stat.mode);
-					stat.mode = 0400777;
+//					stat.mode = info.item_collection.total_count>1?"040":"0100";
+//					if (info.shared_link != undefined) {
+//					stat.mode += (info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)+((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10)+0((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10); // NOTE the execute bit is always set to false
+//					} else {
+//					stat.mode += "777";
+//					}
+//					console.log("SM:"+stat.mode);
+//					stat.mode = parseInt(stat.mode);
+					stat.mode = 040777;
 					cb(err, stat);
 					});
 			} else {
+			return cb(err, pathId.permissions);
 			connection.getFileInfo(pathId.id, function (error, info) {
 					console.log('FE:'+error);
 					if (error) return cb( error, null );
 					stat.size = info.size;
 					stat.nlink = 1;
-					stat.mode = "0100";
-					if (info.shared_link != undefined) {
-					stat.mode += (info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)+((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10)+0((info.shared_link.permissions.can_share?0:0)+(info.shared_link.permissions.can_download?0:2)+(info.shared_link.permissions.can_upload?0:4)*10); // NOTE the execute bit is always set to false
-					} else {
-					stat.mode += "777";
-					}
-					stat.mode = parseInt(stat.mode);
-					//stat.mode = 040777;
+//					stat.mode = "0100";
+//					if (info.shared_link != undefined) {
+//					stat.mode += (info.shared_link.permissions.can_share?"0":"0")+(info.shared_link.permissions.can_download?"0":"2")+(info.shared_link.permissions.can_upload?"0":"4")+((info.shared_link.permissions.can_share?"0":"0")+(info.shared_link.permissions.can_download?"0":"2")+(info.shared_link.permissions.can_upload?"0":"4"))+((info.shared_link.permissions.can_share?"0":"0")+(info.shared_link.permissions.can_download?"0":"2")+(info.shared_link.permissions.can_upload?"0":"4")); // NOTE the execute bit is always set to false
+//					} else {
+//					stat.mode += "777";
+//					}
+//					stat.mode = parseInt(stat.mode);
+					stat.mode = 0100666;
 					cb( err, stat);
 					});
 			}
@@ -124,6 +135,7 @@ function getattr(path, cb) {
  *     and names is the result in the form of an array of file names (when err === 0).
  */
 function readdir(path, cb) {
+	console.log("readdir(path, cb)");
 	var names = [];//'Swift'];
 	var err = 0; // assume success
 	lookup(connection, path, function (pathId) {
@@ -133,6 +145,7 @@ function readdir(path, cb) {
 			cb( err, names );
 			} else {
 			connection.getFolderInfo(pathId.id, function (error, body) {
+					console.log("E:"+error);
 					if (error) cb( error, null );
 					var info = eval(body);
 					console.log(JSON.stringify(body.item_collection.entries));
@@ -155,6 +168,7 @@ function readdir(path, cb) {
  *     read(), write(), and release() calls.
  */
 function open(path, flags, cb) {
+	console.log("open(path, flags, cb)");
 	var err = 0; // assume success
 	lookup(connection, path, function(info) {
 
@@ -178,9 +192,10 @@ function open(path, flags, cb) {
  *     A positive value represents the number of bytes actually read.
  */
 function read(path, offset, len, buf, fh, cb) {
+	console.log("read(path, offset, len, buf, fh, cb)");
 	var err = 0; // assume success
 	lookup(connection, path, function(info) {
-			var file = info.node;
+			var file = info;
 			var maxBytes;
 			var data;
 
@@ -194,11 +209,12 @@ function read(path, offset, len, buf, fh, cb) {
 			break;
 
 			case 'file': // a string treated as ASCII characters
-			tmp.tmpName(function _tempNameGenerated(err, path) {
+					console.log(info);
+			tmp.tmpName(function (err, path) {
 					if (err) cb(err);
 					connection.getFile(file.id, null, path, function (error) {
 							if (error) cb(error);
-							fs.read(path, buf, 0, len, offset, cb);
+							fs.open(path, "r", function (error, fd) {fs.read(fd, buf, 0, len, offset, cb);});
 							});
 					});
 			return;
@@ -223,6 +239,7 @@ function read(path, offset, len, buf, fh, cb) {
  *     A positive value represents the number of bytes actually written.
  */
 function write(path, offset, len, buf, fh, cb) {
+	console.log("write(path, offset, len, buf, fh, cb)");
 	var err = 0; // assume success
 	lookup(connection, path, function (info) {
 			var parent = info.parent;
@@ -279,6 +296,7 @@ function release(path, fh, cb) {
  *     read(), write(), and release() calls (it's set to 0 if fh is unspecified)
  */
 function create (path, mode, cb) {
+	console.log("create(path, mode, cb)");
 	var err = 0; // assume success
 	lookup(connection, path, function (info) {
 
@@ -300,11 +318,12 @@ function create (path, mode, cb) {
  * cb: a callback of the form cb(err), where err is the Posix return code.
  */
 function unlink(path, cb) {
+	console.log("unlink(path, cb)");
 	var err = 0; // assume success
 	lookup(connection, path, function (info) {
 
 			switch (info.type) {
-			case 'undefined':
+			case undefined:
 			err = -2; // -ENOENT      
 			break;
 
@@ -313,7 +332,8 @@ function unlink(path, cb) {
 			break;
 
 			case 'file': // existing file
-			connection.deleteFileNewVersion(file.id, cb);
+			connection.deleteFileVersion(info.id); //TODO errchecking
+			cb(0);
 			return;
 
 			default:
@@ -486,22 +506,6 @@ getattr: getattr,
 
 //---------------------------------------------------------------------------
 
-function usage() {
-	console.log();
-	console.log("Usage: node jsonFS.js [options] inputJsonFile mountPoint");
-	console.log("(Ensure the mount point is empty and you have wrx permissions to it)\n")
-		console.log("Options:");
-	console.log("-o outputJsonFile  : save modified data to new JSON file. Input file is never modified.");
-	console.log("-d                 : make FUSE print debug statements.");
-	console.log("-a                 : add allow_other option to mount (might need user_allow_other in system fuse config file).");
-	console.log();
-	console.log("Example:");
-	console.log("node example/jsonFS.fs -d -o /tmp/output.json example/sample.json /tmp/mnt");
-	console.log();
-}
-
-//---------------------------------------------------------------------------
-
 function parseArgs() {
 	var args = process.argv;
 	if (args.length < 3) {
@@ -510,6 +514,25 @@ function parseArgs() {
 	options.mountPoint = args[2];
 	options.email = args[3];
 	return true;
+}
+
+//---------------------------------------------------------------------------
+//
+function walkFileTree(id, connection, fileTree) {
+		connection.getFolderItems(id, {'fields': ['name', 'id', 'size']}, function (error, body) {
+			body=eval(body);
+			for(var i = 0; i < body.total_count; i++) {
+				var node = body.entries[i];
+				console.log(node);
+				if (node.type === 'folder') {
+					fileTree.children[node.name] = {"type": "folder","parent":fileTree,"children":{},"permissions":{"mode": 040777, "nlink": 1,"size": 4096}, "id": parseInt(node.id), "name": node.name};
+					fileTree.children[node.name] = walkFileTree(fileTree.children[node.name].id, connection, fileTree.children[node.name]);
+				} else {
+					fileTree.children[node.name] = {"type": "file", "parent":fileTree,"children":{},"permissions":{"mode": 0100666, "nlink": 1,"size": node.size}, "id": parseInt(node.id), "name": node.name};
+				}
+			}
+		});
+		return fileTree;
 }
 
 //---------------------------------------------------------------------------
@@ -530,7 +553,9 @@ host: 'localhost' //default localhost
 
  connection.ready(function () {
 	try {
-		fileTree["/"] = {"type": "folder","parent":fileTree["/"],"children":[],"permissions":{"mode": 0100777, "nlink": 1, "uid": process.getuid(), "gid": process.getgid(), "size": 4096}};
+		fileTree = {"/": {"type": "folder","parent":fileTree,"children":{},"permissions":{"mode": 040777, "nlink": 1}, "size": 4096, "id": 0}};
+		fileTree["/"] = walkFileTree(0, connection, fileTree["/"]);
+		console.log(util.inspect(fileTree));
 		f4js.start(options.mountPoint, handlers, options.debugFuse, []);
 	 } catch (e) {
 		console.log("Exception when starting file system: " + e);
